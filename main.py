@@ -32,6 +32,8 @@ def train_model(model, dataloader, optimizer, criterion, logger, num_epochs=10):
             
             if batch_idx % 10 == 0:
                 logger.info(f'Epoch [{epoch+1}/{num_epochs}], Step [{batch_idx}], Loss: {loss.item():.4f}')
+        if epoch % 2 == 0:
+            torch.save(model.state_dict(), f"checkpoints/model_epoch_{epoch}.pth")
 
 cfg = gpt.GPT_CONFIG_124M
 model = gpt.MyGPT(cfg).to(device)
@@ -43,12 +45,11 @@ optimizer = torch.optim.AdamW(
     weight_decay=0.1
 )
 num_epochs = 10
-data = get_data()
 poem_dataset = LLMIterableDataset()
 current_datetime = datetime.now()
 formatted_time = current_datetime.strftime("%Y-%m-%d %H:%M:%S")
 logger = setup_logger("train", f"logs/train_{formatted_time}.txt")
-poen_dataloader = dataloader = DataLoader(
+dataloader = DataLoader(
         poem_dataset, 
         batch_size=4, 
         shuffle=False,
