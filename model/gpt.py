@@ -63,6 +63,27 @@ OpenAI的GPT模型使用的是在训练过程中优化的绝对位置嵌入
 在实现中，我们可以使用torch.triu函数来创建上三角矩阵，并将其与注意力权重矩阵相乘。
 '''
 
+'''
+Q1:既然滑动窗口已经控制了下标，为什么还需要 attention_mask？
+答案：滑动窗口解决了数据切割问题，但无法解决以下问题：
+
+尾部填充需求：当剩余文本不足窗口大小时必须填充。
+
+批处理对齐：同一批次内样本需统一长度。
+
+模型计算需求：自注意力机制需要明确无效位置。
+
+attention_mask 是填充掩码，用于标识有效数据区域。必须手动生成，因为：
+
+每个样本的填充长度不同
+
+滑动窗口切割可能导致新的填充需求
+Q2：能否完全避免填充？
+理论可能：若所有文本长度恰好是窗口大小的整数倍，且使用动态batch策略。
+
+现实情况：实际数据长度分布复杂，动态batch会显著降低训练效率（显存碎片化、无法使用Tensor Core加速）。
+'''
+
 class MyGPT(nn.Module):
     def __init__(self,cfg):
         super(MyGPT, self).__init__()
@@ -70,19 +91,21 @@ class MyGPT(nn.Module):
         self.position_embedding = nn.Embedding(cfg["max_length"], cfg["emb_dim"])
         self.drop_emb = nn.Dropout(cfg["drop_rate"])
         self.trf_blocks = nn.Sequential(
-        *[TransformerBlock(cfg) for _ in range(cfg["n_layers"])]
+            *[TransformerBlock(cfg) for _ in range(cfg["n_layers"])]
         )
         self.final_norm = nn.LayerNorm(cfg["emb_dim"])
         self.out_head = nn.Linear(cfg["emb_dim"], cfg["vocab_size"],bias=False)
 
-    def forward(self,in_idx):
+    def forward(self,in_idx, attn_mask=None):
         device = in_idx.device
         batch_size, seq_len = in_idx.shape
         tok_embeds = self.token_embedding(in_idx)
         pos_embeds = self.position_embedding(torch.arange(seq_len, device=device))
         x = tok_embeds + pos_embeds
         x = self.drop_emb(x)
-        x = self.trf_blocks(x)
+        for trf_block in self.trf_blocks:
+            x = trf_block(x, attn_mask)
+        # x = self.trf_blocks(x,attn_mask)
         x = self.final_norm(x) # (B, L, d_model)
         logits = self.out_head(x) # (B, L, vocab_size)
         return logits

@@ -20,7 +20,7 @@ class MultiHeadCausalAttention(nn.Module):
         )  # 注册掩码缓冲区
         self.dropout = nn.Dropout(drop_rate)  # Dropout层
 
-    def forward(self, x):
+    def forward(self, x, attention_mask = None):
         """
         输入:
             x: 输入张量 (batch_size, seq_len, d_model)
@@ -36,12 +36,18 @@ class MultiHeadCausalAttention(nn.Module):
         v = self.w_v(x).view(batch_size, seq_len, self.n_heads, self.d_k).transpose(1, 2)  # (B, H, L, d_k)
 
         # 2. 计算缩放点积注意力
+        # extended_attention_mask = (1.0 - attention_mask) * -10000.0
         attn_scores = torch.matmul(q, k.transpose(-2, -1))# (B, H, L, d_k) * (B, H, d_k, L) = (B, H, L, L)
-
+        # attn_scores += extended_attention_mask  # (B, H, L, L)
         mask_bool = self.mask.bool()[:seq_len, :seq_len]  # (L, L)
-
+ 
         # 3. 应用因果掩码（防止关注未来位置）
-        attn_scores = attn_scores.masked_fill(mask_bool, -1e9)
+        if attention_mask is not None:
+            attention_mask = attention_mask.unsqueeze(1).unsqueeze(1)  # [B, 1, 1, L]
+            attention_mask = attention_mask.expand(-1, self.n_heads, seq_len, -1)
+            attn_scores = attn_scores.masked_fill(attention_mask == 0, float('-inf'))
+        else:
+            attn_scores = attn_scores.masked_fill(mask_bool, -1e9)
 
         attn_weights = F.softmax(attn_scores/(k.shape[-1]**0.5), dim=-1)  # (B, H, L, L)
         attn_weights = self.dropout(attn_weights)
@@ -84,8 +90,8 @@ class TransformerBlock(nn.Module):
         self.norm2 = nn.LayerNorm(cfg["emb_dim"])
         self.dropout = nn.Dropout(cfg["drop_rate"])
 
-    def forward(self, x):
-        attention = self.attention(x)
+    def forward(self, x, attention_mask=None):
+        attention = self.attention(x,attention_mask)
         x = self.dropout(self.norm1(attention + x))
         forward = self.feed_forward(x)
         out = self.dropout(self.norm2(forward + x))
