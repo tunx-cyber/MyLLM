@@ -35,19 +35,26 @@ class MultiHeadCausalAttention(nn.Module):
         k = self.w_k(x).view(batch_size, seq_len, self.n_heads, self.d_k).transpose(1, 2)  # (B, H, L, d_k)
         v = self.w_v(x).view(batch_size, seq_len, self.n_heads, self.d_k).transpose(1, 2)  # (B, H, L, d_k)
 
-        # 2. 计算缩放点积注意力
-        # extended_attention_mask = (1.0 - attention_mask) * -10000.0
-        attn_scores = torch.matmul(q, k.transpose(-2, -1))# (B, H, L, d_k) * (B, H, d_k, L) = (B, H, L, L)
-        # attn_scores += extended_attention_mask  # (B, H, L, L)
-        mask_bool = self.mask.bool()[:seq_len, :seq_len]  # (L, L)
- 
-        # 3. 应用因果掩码（防止关注未来位置）
-        if attention_mask is not None:
-            attention_mask = attention_mask.unsqueeze(1).unsqueeze(1)  # [B, 1, 1, L]
-            attention_mask = attention_mask.expand(-1, self.n_heads, seq_len, -1)
-            attn_scores = attn_scores.masked_fill(attention_mask == 0, float('-inf'))
+        causal_mask = self.mask.bool()[:seq_len, :seq_len]  # (L, L)
+        causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)
+        causal_mask = causal_mask.expand(batch_size, self.n_heads, -1, -1)  # (B, H, L, L)
+
+        padding_mask = attention_mask
+        if padding_mask is not None:
+            # 转换填充掩码为注意力掩码格式
+            padding_mask = padding_mask.unsqueeze(1).unsqueeze(1)  # [B, 1, 1, L]
+            padding_mask = padding_mask.expand(-1, self.n_heads, seq_len, -1)  # [B, H, L, L]
+            
+            # 合并逻辑：如果任一掩码为True（需要屏蔽），则最终掩码为True
+            combined_mask = causal_mask | (~padding_mask)  # [B, H, L, L]
         else:
-            attn_scores = attn_scores.masked_fill(mask_bool, -1e9)
+            combined_mask = causal_mask
+
+        # 2. 计算缩放点积注意力
+        attn_scores = torch.matmul(q, k.transpose(-2, -1))# (B, H, L, d_k) * (B, H, d_k, L) = (B, H, L, L)
+
+        # 3. 应用因果掩码（防止关注未来位置）
+        attn_scores = attn_scores.masked_fill(combined_mask, -1e9)
 
         attn_weights = F.softmax(attn_scores/(k.shape[-1]**0.5), dim=-1)  # (B, H, L, L)
         attn_weights = self.dropout(attn_weights)

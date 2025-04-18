@@ -68,10 +68,11 @@ def sliding_window(text,tokenizer, window_size=2048, stride=1024):
         
         yield {
             "input_ids": torch.tensor(input_ids),
-            "attention_mask": torch.tensor(attention_mask),
+            "attention_mask": torch.tensor(attention_mask, dtype=torch.bool),
             "labels": torch.tensor(labels)
         }
 
+# 还可以改进点：1. mmap映射文件，2. 通过多进程读取数据
 class LLMIterableDataset(IterableDataset):
     def __init__(self, file_path=file_path, tokenizer=tiktoken.get_encoding("gpt2"), window_size=1024, stride=1024//4):
         self.file_path = file_path
