@@ -1,6 +1,6 @@
 import torch
 from model import gpt
-from utils.data import get_data, PoemDataset
+from utils.data import get_data, LLMIterableDataset
 from torch.utils.data import DataLoader
 from utils.tokenizer import tokenizer
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -16,12 +16,11 @@ def train_model(model, dataloader, optimizer, criterion, num_epochs=10):
     """
     model.train()
     for epoch in range(num_epochs):
-        for batch_idx, (input_ids, target_ids) in enumerate(dataloader):
-            input_ids = input_ids.to(device)
-            target_ids = target_ids.to(device)
-            
+        for batch_idx, data in enumerate(dataloader):
+            input_ids = data["input_ids"].to(device)
+            target_ids = data["labels"].to(device)
             optimizer.zero_grad()
-            outputs = model(input_ids)
+            outputs = model(input_ids,data["attention_mask"].to(device))
             loss = criterion(
                 outputs.flatten(0, 1),# [batch,seq_len,vocab_size(logits)]
                 target_ids.flatten() #[batch_size, seq_len(id)]
@@ -43,8 +42,7 @@ optimizer = torch.optim.AdamW(
 )
 num_epochs = 10
 data = get_data()
-poem_dataset = PoemDataset(data[:10],cfg["max_length"], stride=1,tokenizer=tokenizer)
-print(f"数据长度: {len(poem_dataset)}")
+poem_dataset = LLMIterableDataset()
 
 poen_dataloader = dataloader = DataLoader(
         poem_dataset, 
