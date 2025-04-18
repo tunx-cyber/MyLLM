@@ -16,18 +16,8 @@ def generate_text_simple(model, idx, max_new_tokens, context_size):
 
 def text_to_token_ids(text, tokenizer):
     encoded = tokenizer.encode(text)
-    encoded_tensor = torch.tensor(encoded).unsqueeze(0).unsqueeze(0)
+    encoded_tensor = torch.tensor(encoded).unsqueeze(0)
     return encoded_tensor # 添加批次维度
 def token_ids_to_text(token_ids, tokenizer):
     flat = token_ids.squeeze(0) # 移除批次维度
     return tokenizer.decode(flat.tolist())
-
-# start_context = "Every effort moves you"
-# tokenizer = tiktoken.get_encoding("gpt2")
-# token_ids = generate_text_simple(
-#     model=model,
-#     idx=text_to_token_ids(start_context, tokenizer),
-#     max_new_tokens=10,
-#     context_size=GPT_CONFIG_124M["context_length"]
-# )
-# print("Output text:\n", token_ids_to_text(token_ids, tokenizer))
