@@ -3,9 +3,11 @@ from model import gpt
 from utils.data import get_data, LLMIterableDataset
 from torch.utils.data import DataLoader
 from utils.tokenizer import tokenizer
+from utils.logger import setup_logger
+from datetime import datetime
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def train_model(model, dataloader, optimizer, criterion, num_epochs=10):
+def train_model(model, dataloader, optimizer, criterion, logger, num_epochs=10):
     """
     训练模型
     :param model: 模型
@@ -29,7 +31,7 @@ def train_model(model, dataloader, optimizer, criterion, num_epochs=10):
             optimizer.step()
             
             if batch_idx % 10 == 0:
-                print(f'Epoch [{epoch+1}/{num_epochs}], Step [{batch_idx}], Loss: {loss.item():.4f}')
+                logger.info(f'Epoch [{epoch+1}/{num_epochs}], Step [{batch_idx}], Loss: {loss.item():.4f}')
 
 cfg = gpt.GPT_CONFIG_124M
 model = gpt.MyGPT(cfg).to(device)
@@ -43,14 +45,16 @@ optimizer = torch.optim.AdamW(
 num_epochs = 10
 data = get_data()
 poem_dataset = LLMIterableDataset()
-
+current_datetime = datetime.now()
+formatted_time = current_datetime.strftime("%Y-%m-%d %H:%M:%S")
+logger = setup_logger("train", f"logs/train_{formatted_time}.txt")
 poen_dataloader = dataloader = DataLoader(
         poem_dataset, 
         batch_size=4, 
         shuffle=False,
-        drop_last=True, 
+        drop_last=True,
         num_workers=4
 )
 criterion = torch.nn.CrossEntropyLoss()
-train_model(model, dataloader, optimizer, criterion, num_epochs)
+train_model(model, dataloader, optimizer, criterion, logger, num_epochs)
 torch.save(model.state_dict(), "model.pth")
