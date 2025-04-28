@@ -52,19 +52,22 @@ def get_data():
 
 #######流式加载######
 from torch.utils.data import IterableDataset
-def sliding_window(text,tokenizer, window_size=2048, stride=1024):
-    tokens = tokenizer.encode(text)
-    for start in range(0, len(tokens), stride):#对齐window size 所以会到最后一个token
-        end = start + window_size
-        window = tokens[start:end]
+def sliding_window(text,tokenizer, window_size=1024, stride=1024):
+    tokens = tokenizer.encode(text, allowed_special = {"<|endoftext|>"})
+    for start in range(0, len(tokens)-window_size, stride):#对齐window size 所以会到最后一个token
+        # end = start + window_size
+        # window = tokens[start:end]
         
-        # 处理填充
-        pad_len = max(0, window_size - len(window))
-        input_ids = window + [tokenizer.eot_token] * pad_len  # GPT-2的pad_token是<|endoftext|>
-        attention_mask = [1] * len(window) + [0] * pad_len
+        # # 处理填充
+        # pad_len = max(0, window_size - len(window))
+        # input_ids = window + [tokenizer.eot_token] * pad_len  # GPT-2的pad_token是<|endoftext|>
+        # attention_mask = [1] * len(window) + [0] * pad_len
         
-        # 生成目标（左移一位）
-        labels = input_ids[1:] + [tokenizer.eot_token]  # 最后一个位置预测pad
+        # # 生成目标（左移一位）
+        # labels = input_ids[1:] + [tokenizer.eot_token]  # 最后一个位置预测pad
+        input_ids = tokens[start:start+window_size]
+        labels = tokens[start+1:start+window_size+1]
+        attention_mask = [1] * len(input_ids)
         
         yield {
             "input_ids": torch.tensor(input_ids),
@@ -74,7 +77,7 @@ def sliding_window(text,tokenizer, window_size=2048, stride=1024):
 
 # 还可以改进点：1. mmap映射文件，2. 通过多进程读取数据
 class LLMIterableDataset(IterableDataset):
-    def __init__(self, file_path=file_path, tokenizer=tiktoken.get_encoding("gpt2"), window_size=1024, stride=1024//4):
+    def __init__(self, file_path=file_path, tokenizer=tiktoken.get_encoding("gpt2"), window_size=1024, stride=1):
         self.file_path = file_path
         self.tokenizer = tokenizer
         self.window_size = window_size

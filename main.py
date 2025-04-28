@@ -1,13 +1,14 @@
 import torch
 from model import gpt
-from utils.data import get_data, LLMIterableDataset
+from utils.data import LLMIterableDataset
 from torch.utils.data import DataLoader
 from utils.tokenizer import tokenizer
 from utils.logger import setup_logger
 from datetime import datetime
+from torch.optim.lr_scheduler import CosineAnnealingLR
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def train_model(model, dataloader, optimizer, criterion, logger, num_epochs=10):
+def train_model(model, dataloader, optimizer,scheduler, criterion, logger, num_epochs=1):
     """
     训练模型
     :param model: 模型
@@ -22,14 +23,14 @@ def train_model(model, dataloader, optimizer, criterion, logger, num_epochs=10):
             input_ids = data["input_ids"].to(device)
             target_ids = data["labels"].to(device)
             optimizer.zero_grad()
-            outputs = model(input_ids,data["attention_mask"].to(device))
+            outputs = model(input_ids)
             loss = criterion(
                 outputs.flatten(0, 1),# [batch,seq_len,vocab_size(logits)]
                 target_ids.flatten() #[batch_size, seq_len(id)]
             )
             loss.backward()
             optimizer.step()
-            
+            scheduler.step()
             if batch_idx % 10 == 0:
                 logger.info(f'Epoch [{epoch+1}/{num_epochs}], Step [{batch_idx}], Loss: {loss.item():.4f}')
         if epoch % 2 == 0:
@@ -44,7 +45,8 @@ optimizer = torch.optim.AdamW(
     lr=4e-4,
     weight_decay=0.1
 )
-num_epochs = 10
+scheduler = CosineAnnealingLR(optimizer, T_max=200, eta_min=0.001)
+num_epochs = 2
 poem_dataset = LLMIterableDataset()
 current_datetime = datetime.now()
 formatted_time = current_datetime.strftime("%Y-%m-%d %H:%M:%S")
@@ -57,5 +59,5 @@ dataloader = DataLoader(
         num_workers=4
 )
 criterion = torch.nn.CrossEntropyLoss()
-train_model(model, dataloader, optimizer, criterion, logger, num_epochs)
+train_model(model, dataloader,optimizer, scheduler, criterion, logger, num_epochs)
 torch.save(model.state_dict(), "model.pth")
