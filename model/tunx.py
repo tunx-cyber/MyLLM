@@ -9,19 +9,56 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Tuple
 import math
+"""
+    Data class for defining model arguments and hyperparameters.
 
-class ModelArgs:
-    dim: int = 4096  # 模型维度
-    n_layers: int = 32  # 层数
-    n_heads: int = 32  # 头数
-    n_kv_heads: Optional[int] = None
-    vocab_size: int = -1  # 词汇表大小
-    multiple_of: int = 256  # make SwiGLU hidden layer size multiple of large power of 2
-    ffn_dim_multiplier: Optional[float] = None
-    norm_eps: float = 1e-5
-    rope_theta: float = 500000
-    max_batch_size: int = 32
-    max_seq_len: int = 2048  # 序列长度
+    Attributes:
+        max_batch_size (int): Maximum batch size.
+        max_seq_len (int): Maximum sequence length.
+        dtype (Literal["bf16", "fp8"]): Data type for computations.
+        vocab_size (int): Vocabulary size.
+        dim (int): Model dimension.
+        inter_dim (int): Intermediate dimension for MLP layers.
+        moe_inter_dim (int): Intermediate dimension for MoE layers.
+        n_layers (int): Number of transformer layers.
+        n_dense_layers (int): Number of dense layers in the model.
+        n_heads (int): Number of attention heads.
+        n_routed_experts (int): Number of routed experts for MoE layers.
+        n_shared_experts (int): Number of shared experts for MoE layers.
+        n_activated_experts (int): Number of activated experts in MoE layers.
+        n_expert_groups (int): Number of expert groups.
+        n_limited_groups (int): Number of limited groups for MoE routing.
+        score_func (Literal["softmax", "sigmoid"]): Scoring function for MoE routing.
+        route_scale (float): Scaling factor for routing scores.
+        q_lora_rank (int): LoRA rank for query projections.
+        kv_lora_rank (int): LoRA rank for key-value projections.
+        qk_nope_head_dim (int): Dimension for query-key projections without positional embeddings.
+        qk_rope_head_dim (int): Dimension for query-key projections with rotary embeddings.
+        v_head_dim (int): Dimension for value projections.
+        original_seq_len (int): Original sequence length.
+        rope_theta (float): Base for rotary positional encoding.
+        rope_factor (float): Scaling factor for extended sequence lengths.
+        beta_fast (int): Fast beta correction factor.
+        beta_slow (int): Slow beta correction factor.
+        mscale (float): Scaling factor for extended attention.
+    """
+ModelArgs = {
+    "dim": 512,  # 模型维度
+    "inter_dim": 1024,  # 前馈网络的隐藏维度
+    "moe_inter_dim": 1024,  # MoE层的隐藏维度
+    "n_heads": 8,  # 注意力头数
+    "n_layers": 12,  # Transformer层数
+    "n_dense_layers": 1, 
+    "n_routed_experts": 8,  # 路由专家数量，也就是会被topk的专家
+    "n_shared_experts" : 1,  # 共享专家数量
+    "n_avtivate_experts": 2,  # 激活的专家数量
+    "vocab_size": 50257,  # 词汇表大小
+    "max_seq_len": 512,  # 最大序列长度
+    "rope_theta": 10000.0,  # 旋转位置编码的参数
+    "norm_eps": 1e-6,  # RMSNorm的epsilon值
+    "droprate": 0.1,  # Dropout率
+
+}
 
 class RMSNorm(torch.nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
@@ -56,7 +93,8 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
     # ndim为x的维度数, 此时应该为4
     ndim = x.ndim
     assert 0 <= 1 < ndim
-    assert freqs_cis.shape == (x.shape[1], x.shape[-1])
+    assert freqs_cis.shape == (x.shape[1], x.shape[-1]) 
+    
     shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
     # (1, x.shape[1], 1, x.shape[-1])
     return freqs_cis.view(*shape)
@@ -85,23 +123,20 @@ def apply_rotary_emb(
     return xq_out.type_as(xq), xk_out.type_as(xk)
 
 class Attention(nn.Module):
-    def __init__(self, cfg: ModelArgs):
+    def __init__(self, args):
         super(Attention, self).__init__()
-        assert cfg.dim % cfg.n_heads == 0, "模型维度必须能被头数整除"
-        self.cfg = cfg
-        self.n_heads = cfg.n_heads
-        self.d_model = cfg.dim
+        assert args["dim"] % args["n_heads"] == 0, "模型维度必须能被头数整除"
+        self.args = args
+        self.n_heads = args["n_heads"]
+        self.d_model = args["dim"]
         self.d_k = self.d_model // self.n_heads  # 每个头的维度
         # self.n_kv_heads = cfg.n_kv_heads if cfg.n_kv_heads else cfg.n_heads
         self.w_q = nn.Linear(self.d_model, self.d_model, bias=False)  # 查询线性变换
         self.w_k = nn.Linear(self.d_model, self.d_model, bias=False)  # 键线性变换
         self.w_v = nn.Linear(self.d_model, self.d_model, bias=False)  # 值线性变换
         self.w_o = nn.Linear(self.d_model, self.d_model, bias=False)  # 输出线性变换
-        # self.mask = torch.tril(torch.ones(cfg.max_seq_len, cfg.max_seq_len), diagonal=1)
-        self.dropout = nn.Dropout(cfg.droprate)  # Dropout层
+        self.dropout = nn.Dropout(args["droprate"])  # Dropout层
 
-        # self.freqs_cis = precompute_freqs_cis(self.d_model, cfg.max_seq_len * 2)
-    
     def forward(self, x: torch.Tensor, freqs_cis, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         batch_size, seq_len, d_embd = x.shape  # d_model和_相等
         # 线性投影并分割多头
@@ -111,7 +146,6 @@ class Attention(nn.Module):
 
         # 计算旋转位置编码
         q, k = apply_rotary_emb(q, k, freqs_cis)  # q和k的最后一个维度进行复数运算，得到新的q和k
-
         # 计算注意力分数
         q = q.transpose(1, 2)# (B, H, L, d_k)
         k = k.transpose(1, 2)
@@ -123,7 +157,7 @@ class Attention(nn.Module):
         # scores = scores.masked_fill(mask_bool, -torch.inf)
 
         if mask is not None:
-            scores = scores + mask.unsqueeze(1)  # mask的形状为(B, 1, L, L)，scores的形状为(B, H, L, L)
+            scores = scores + mask  # mask的形状为(B, L, L)，scores的形状为(B, H, L, L)
 
         attn_weights = F.softmax(scores/(k.shape[-1]**0.5), dim=-1)  # (B, H, L, L)
         attn_weights = self.dropout(attn_weights)
@@ -162,76 +196,77 @@ class FeedForward(nn.Module):
 
 class Expert(nn.Module):
     """单个专家网络（可替换为任意子网络）"""
-    def __init__(self, input_dim, output_dim, hidden_dim=256):
+    def __init__(self, dim, hidden_dim=256):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, output_dim)
-        )
+        self.w1 = nn.Linear(dim, hidden_dim)
+        self.w2 = nn.Linear(hidden_dim, dim)
+        self.act = nn.SiLU()
+        self.w3 = nn.Linear(dim, hidden_dim)
     
     def forward(self, x):
-        return self.net(x)
+        return self.w2(self.act(self.w1(x)) * self.w3(x)) 
 
 class MoELayer(nn.Module):
     """MoE核心层：动态路由 + 专家并行计算"""
-    def __init__(self, num_experts, input_dim, output_dim, top_k=2):
+    def __init__(self, args):
         super().__init__()
-        self.num_experts = num_experts
-        self.top_k = top_k
-        
+        self.top_k = args["n_avtivate_experts"]
+        self.dim = args["dim"]
+        self.n_routed_experts = args["n_routed_experts"]
         # 专家池
         self.experts = nn.ModuleList(
-            [Expert(input_dim, output_dim) for _ in range(num_experts)]
+            [Expert(args["dim"], args["moe_inter_dim"]) for _ in range(args["n_routed_experts"])]
         )
+        self.shared_experts = FeedForward(args["dim"], args["moe_inter_dim"]* args["n_shared_experts"])
         # 门控网络
-        self.gate = nn.Linear(input_dim, num_experts)
+        self.gate = nn.Linear(args["dim"], args["n_routed_experts"])
         
         # 负载平衡统计量
-        self.register_buffer('avg_probs', torch.zeros(num_experts))
+        self.register_buffer('avg_probs', torch.zeros(args["n_routed_experts"]))
+
+        self.bias = None
         
     def forward(self, x):
         # x shape: [batch_size, seq_len, input_dim]
-        batch_size, seq_len, _ = x.shape
+        shape = x.size()
+        x = x.view(-1, self.dim)
         
         # Step 1: 计算门控权重
-        gate_logits = self.gate(x)  # [batch, seq_len, num_experts]
-        gate_probs = F.softmax(gate_logits, dim=-1)
-        
+        gate_logits = self.gate(x)
+        scores = F.softmax(gate_logits, dim=-1)
+
+        original_scores = scores
+        if self.bias is not None:
+            scores = scores + self.bias
+
         # Step 2: 选择Top-K专家
-        topk_probs, topk_indices = torch.topk(
-            gate_probs, k=self.top_k, dim=-1)  # [batch, seq_len, top_k]
+        topk_probs, indices = torch.topk(
+            scores, k=self.top_k, dim=-1
+        )
         
-        # Step 3: 生成路由掩码（稀疏计算）
-        mask = F.one_hot(topk_indices, self.num_experts)  # [batch, seq_len, top_k, num_experts]
-        mask = mask.sum(dim=2)  # [batch, seq_len, num_experts]
+        weights = original_scores.gather(1, indices) 
+        weights.type_as(x)
+
+        shared_expert_output = self.shared_experts(x)  # [batch * seq_len, dim]
+        router_expert_output= torch.zeros_like(x)
+        counts = torch.bincount(indices.flatten(), minlength=self.n_routed_experts).tolist()
+        for i in range(len(self.experts)):
+            if counts[i] == 0:
+                continue
+            expert = self.experts[i]
+            idx, top = torch.where(indices == i)
+            router_expert_output[idx] += expert(x[idx]) * weights[idx, top, None]
         
-        # Step 4: 并行计算所有专家输出
-        x_expanded = x.unsqueeze(2).expand(-1, -1, self.num_experts, -1)  # [batch, seq_len, num_experts, input_dim]
-        expert_outputs = torch.stack([expert(x_expanded[..., i, :]) 
-                                     for i, expert in enumerate(self.experts)], dim=-2)
-        # expert_outputs shape: [batch, seq_len, num_experts, output_dim]
-        
-        # Step 5: 加权聚合结果
-        weighted_output = (expert_outputs * topk_probs.unsqueeze(-1)).sum(dim=2)
-        
-        # 更新负载平衡统计量（用于后续损失计算）
-        self.avg_probs = 0.9 * self.avg_probs + 0.1 * gate_probs.mean(dim=(0,1)).detach()
-        
-        return weighted_output
-    
-    def load_balancing_loss(self):
-        """负载平衡损失（防止专家被忽略）"""
-        prob_mean = self.avg_probs.mean()
-        return self.num_experts * (self.avg_probs * prob_mean.log()).sum()
+        return (shared_expert_output + router_expert_output).view(shape)
+
 
 class TransformerBlock(nn.Module):
-    def __init__(self, layer_id: int, cfg: ModelArgs):
+    def __init__(self, layer_id: int, args):
         super(TransformerBlock, self).__init__()
-        self.attention = Attention(cfg)
-        self.ffn = FeedForward(cfg.dim, cfg.inter_dim) if layer_id < cfg.n_dense_layers else MoELayer(cfg)
-        self.attn_norm = RMSNorm(cfg.dim)
-        self.ffn_norm = RMSNorm(cfg.dim)
+        self.attn = Attention(args)
+        self.ffn = FeedForward(args["dim"], args["inter_dim"]) if layer_id < args["n_dense_layers"] else MoELayer(args)
+        self.attn_norm = RMSNorm(args["dim"])
+        self.ffn_norm = RMSNorm(args["dim"])
 
     def forward(self, x: torch.Tensor, freqs_cis, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         x = x + self.attn(self.attn_norm(x), freqs_cis, mask)
@@ -240,14 +275,14 @@ class TransformerBlock(nn.Module):
 
 
 class Tunx(nn.Module):
-    def __init__(self, cfg: ModelArgs):
+    def __init__(self, args = ModelArgs):
         super(Tunx, self).__init__()
-        self.cfg = cfg
-        self.embedding = nn.Embedding(cfg.vocab_size, cfg.dim)
-        self.layers = nn.ModuleList([TransformerBlock(_, cfg) for _ in range(cfg.n_layers)])
-        self.norm = RMSNorm(cfg.dim, eps=cfg.norm_eps)
-        self.head = nn.Linear(cfg.dim, cfg.vocab_size, bias=False)  # 输出层
-        self.freqs_cis = precompute_freqs_cis(cfg.dim, cfg.max_seq_len * 2, cfg.rope_theta)
+        self.args = args
+        self.embedding = nn.Embedding(args["vocab_size"], args["dim"])
+        self.layers = nn.ModuleList([TransformerBlock(idx, args) for idx in range(args["n_layers"])])
+        self.norm = RMSNorm(args["dim"])
+        self.head = nn.Linear(args["dim"], args["vocab_size"], bias=False)  # 输出层
+        self.freqs_cis = precompute_freqs_cis(args["dim"]//args["n_heads"], args["max_seq_len"] * 2, args["rope_theta"])
     
     def forward(self, x: torch.Tensor):
         batch_size, seq_len = x.shape
